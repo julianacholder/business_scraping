@@ -3,147 +3,174 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 import re
+import urllib.parse
 
-# Define the base URL
-BASE_URL = "https://business.ycea-pa.org"
-
-# Headers to mimic a real browser request
+# Define the base URL for the business directory
+BASE_URL = "https://business.ycea-pa.org/list/ql/business-personal-professional-services-1401"
+# Set headers to mimic a browser request
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
 }
 
-# Function to scrape businesses from the main list
-def scrape_businesses(max_pages=10):  # Add a max_pages parameter with a default value
-    businesses = []
-    page_num = 1
+# Function to get the total number of pages
+def get_total_pages(url):
+    response = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(response.text, "html.parser")
+    # Find the pagination section and extract the last page number
+    pagination = soup.find("ul", class_="pagination")
+    if pagination:
+        pages = pagination.find_all("a")
+        page_numbers = [int(page.text) for page in pages if page.text.isdigit()]
+        return max(page_numbers) if page_numbers else 1  # Return max page number found
+    return 1  # Default to 1 if no pagination is found
 
-    while page_num <= max_pages:  # Add a maximum page limit as a safety measure
-        url = f"{BASE_URL}/list/ql/business-personal-professional-services-1401?page={page_num}"
-        print(f"🔍 Scraping page {page_num}...")
+# Function to extract data from the detail page
+def get_business_details(detail_url):
+    try:
+        response = requests.get(detail_url, headers=HEADERS)
+        if response.status_code != 200:
+            print(f"Failed to fetch detail page: {detail_url}")
+            return None, None, None
         
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=30)  # Add timeout
-            if response.status_code != 200:
-                print(f"⚠ Received status code {response.status_code}. Stopping.")
-                break
-                
-            soup = BeautifulSoup(response.text, "html.parser")
-            company_cards = soup.find_all("div", class_="gz-results-card-body")
+        detail_soup = BeautifulSoup(response.text, "html.parser")
+        
+        # Extract category
+        category_section = detail_soup.find("div", class_="gz-details-categories")
+        category = None
+        if category_section:
+            cat_span = category_section.find("span", class_="gz-cat")
+            if cat_span:
+                category = cat_span.text.strip().replace('"', '').replace("::after", "")
+        
+        # Try to find website if not found on main page
+        website = None
+        website_link = detail_soup.find("li", class_="gz-card-website")
+        if website_link and website_link.find("a"):
+            website = website_link.find("a").get("href", "").strip()
+        
+        # Try to find email through contact form link
+        email = None
+        email_link = detail_soup.find("a", class_="card-link", id="gz-directory-contact")
+        if email_link:
+            # Unfortunately, we can't directly get the email from the contact form
+            # This would require form submission or JavaScript execution
+            # For this example, we'll store the contact form URL instead
+            email = "Contact form available"
             
-            # Improved stopping condition
-            if not company_cards:
-                print("✅ No more businesses found. Stopping scraper.")
-                break
+        return category, website, email
+    except Exception as e:
+        print(f"Error fetching details: {e}")
+        return None, None, None
+
+# Function to scrape company data from a page
+def scrape_companies(url):
+    response = requests.get(url, headers=HEADERS)
+    if response.status_code != 200:
+        print(f"Failed to fetch page: {url}")
+        return []
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    company_cards = soup.find_all("div", class_="gz-card-top")  # Find all company card top sections
+    company_data = []
+    
+    for card in company_cards:
+        try:
+            # Extract name and detail page URL
+            name_tag = card.find("h5", class_="card-title")
+            name = None
+            detail_url = None
+            
+            if name_tag and name_tag.find("a"):
+                name_link = name_tag.find("a")
+                name = name_link.text.strip()
+                detail_url = name_link.get("href")
+                if detail_url and not detail_url.startswith("http"):
+                    detail_url = urllib.parse.urljoin("https://business.ycea-pa.org", detail_url)
+            
+            # Find the corresponding body section
+            body_div = card.find_next_sibling("div", class_="card-body")
+            
+            address = None
+            phone = None
+            website = None
+            
+            if body_div:
+                # Extract address
+                address_li = body_div.find("li", class_="gz-card-address")
+                if address_li:
+                    address = address_li.text.strip()
                 
-            # Check if we've reached a pagination indicator suggesting we're at the end
-            pagination = soup.find("ul", class_="pagination")
-            if pagination and "next" not in pagination.text.lower():
-                print("✅ Reached the last page. Stopping scraper.")
-                break
+                # Extract phone number
+                phone_li = body_div.find("li", class_="gz-card-phone")
+                if phone_li:
+                    phone = phone_li.text.strip()
                 
-            # Add a progress counter
-            print(f"Found {len(company_cards)} businesses on this page")
-
-            for card in company_cards:
-                try:
-                    # Extract business name and detail page link
-                    name_tag = card.find_previous_sibling("h5", class_="gz-card-title")
-                    name = name_tag.text.strip() if name_tag else None
-                    detail_link_tag = name_tag.find("a") if name_tag else None
-                    detail_link = BASE_URL + detail_link_tag["href"] if detail_link_tag else None
-
-                    # Extract address
-                    address_tag = card.find("li", class_="gz-card-address")
-                    address = address_tag.text.strip() if address_tag else None
-
-                    # Extract phone number
-                    phone_tag = card.find("li", class_="gz-card-phone")
-                    phone = phone_tag.text.strip() if phone_tag else None
-
-                    # Extract Google Maps link for address
-                    maps_link_tag = address_tag.find("a") if address_tag else None
-                    maps_link = maps_link_tag["href"] if maps_link_tag else None
-
-                    # Extract email, category, and website from business detail page
-                    email, category, website = scrape_business_details(detail_link) if detail_link else (None, None, None)
-
-                    businesses.append({
-                        "Name": name,
-                        "Address": address,
-                        "Phone": phone,
-                        "Google Maps Link": maps_link,
-                        "Category": category,
-                        "Email": email,
-                        "Website": website,
-                        "Detail Page": detail_link
-                    })
-
-                except Exception as e:
-                    print(f"⚠ Error scraping a company: {e}")
-
-            # Save intermediate results every few pages
-            if page_num % 5 == 0:
-                temp_df = pd.DataFrame(businesses)
-                temp_df.to_csv(f"ycea_businesses_temp_page_{page_num}.csv", index=False)
-                print(f"✅ Intermediate data saved with {len(temp_df)} entries.")
-
-            page_num += 1  # Move to the next page
-            time.sleep(2)  # Delay to avoid getting blocked
+                # Extract website
+                website_li = body_div.find("li", class_="gz-card-website")
+                if website_li and website_li.find("a"):
+                    website = website_li.find("a").get("href", "").strip()
+            
+            # Get additional details from the detail page
+            category = None
+            detail_website = None
+            email = None
+            
+            if detail_url:
+                print(f"Fetching details for: {name} from {detail_url}")
+                category, detail_website, email = get_business_details(detail_url)
+                # Use detail page website if main page website is missing
+                if not website and detail_website:
+                    website = detail_website
+                
+                # Add a small delay between detail page requests
+                time.sleep(1)
+            
+            company_data.append({
+                "Name": name,
+                "Address": address,
+                "Phone": phone,
+                "Website": website,
+                "Category": category,
+                "Email": email,
+                "Detail_URL": detail_url
+            })
             
         except Exception as e:
-            print(f"⚠ Error scraping page {page_num}: {e}")
-            # If we encounter an error, try one more time before moving on
-            try:
-                print(f"Retrying page {page_num}...")
-                time.sleep(5)  # Wait longer before retry
-                continue
-            except:
-                break
-
-    return businesses
-
-# Function to scrape email, category, and website from the business detail page
-def scrape_business_details(detail_url):
-    try:
-        response = requests.get(detail_url, headers=HEADERS, timeout=30)  # Add timeout
-        if response.status_code != 200:
-            print(f"⚠ Received status code {response.status_code} for {detail_url}")
-            return None, None, None
-            
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Extract category
-        category_tag = soup.find("span", class_="gz-cat")
-        category = category_tag.text.strip() if category_tag else None
-
-        # Extract website link
-        website_tag = soup.find("a", class_="card-link")
-        website = website_tag["href"].strip() if website_tag and "href" in website_tag.attrs else None
-
-        # Extract email (if directly visible)
-        email_tag = soup.find("a", href=re.compile(r"mailto:"))
-        if email_tag:
-            return email_tag["href"].replace("mailto:", "").strip(), category, website
-
-        # If no email found, return the "Send Email" form link
-        send_email_button = soup.find("a", text=re.compile(r"Send Email", re.IGNORECASE))
-        if send_email_button and "href" in send_email_button.attrs:
-            return BASE_URL + send_email_button["href"], category, website
-
-    except Exception as e:
-        print(f"⚠ Error fetching details from {detail_url}: {e}")
-
-    return None, category, website
-
-# MAIN EXECUTION
-if __name__ == "__main__":
-    # Set the maximum number of pages to scrape
-    MAX_PAGES = 2 # Adjust this value as needed
+            print(f"Error scraping a company: {e}")
     
-    print(f"Starting scraper with a maximum of {MAX_PAGES} pages...")
-    all_businesses = scrape_businesses(max_pages=MAX_PAGES)
+    return company_data
 
-    # Save data to CSV
-    df = pd.DataFrame(all_businesses)
+# Main function to control the scraping process
+def main():
+    # Get total number of pages before scraping
+    total_pages = get_total_pages(BASE_URL)
+    print(f"Total Pages Found: {total_pages}")
+    
+    # For testing, you might want to limit to fewer pages initially
+    pages_to_scrape = min(total_pages, 3)  # Change to total_pages for full scrape
+    
+    # Scrape multiple pages with proper stopping condition
+    all_companies = []
+    for page_num in range(1, pages_to_scrape + 1):
+        page_url = f"{BASE_URL}?page={page_num}"
+        print(f"Scraping page {page_num} of {pages_to_scrape}...")
+        page_data = scrape_companies(page_url)
+        
+        if not page_data:
+            print("No more companies found. Stopping scraping.")
+            break  # Stops early if no data is found on a page
+            
+        all_companies.extend(page_data)
+        print(f"Collected {len(page_data)} companies from page {page_num}")
+        
+        # Add delay between pages to be respectful
+        time.sleep(3)
+    
+    # Save results to CSV file
+    df = pd.DataFrame(all_companies)
     df.to_csv("ycea_business_directory.csv", index=False)
     print(f"✅ Data saved to 'ycea_business_directory.csv' with {len(df)} entries.")
+
+# Run the scraper
+if __name__ == "__main__":
+    main()
