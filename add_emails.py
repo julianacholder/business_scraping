@@ -334,7 +334,7 @@ if __name__ == "__main__":
     csv_file = "ycea_business_directory.csv"  # Update with your CSV file name
     
     # If you need to resume from a specific point, uncomment and edit the line below
-    update_emails_from_websites(csv_file, start_from=156)
+    # update_emails_from_websites(csv_file, start_from=20)
     
     # Otherwise, start from the beginning
-    # update_emails_from_websites(csv_file)
+    update_emails_from_websites(csv_file)
